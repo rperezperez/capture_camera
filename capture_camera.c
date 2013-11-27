@@ -44,6 +44,8 @@ static int exposure_time = -1;
 static int sw = 1280;
 static int sh = 960;
 
+static int white_balance_mode = -1; // V4L2_CID_AUTO_WHITE_BALANCE
+
 struct v4l2_queryctrl queryctrl;
 struct v4l2_querymenu querymenu;
 struct v4l2_control control;
@@ -290,6 +292,7 @@ int capture_image(int fd, char *outputfile)
 		return 1;
 	}
 
+	/*
 	int ret;
 	int f = open(outputfile, O_CREAT | O_TRUNC | O_RDWR, 0660);
 	int len = buf.bytesused;
@@ -302,6 +305,8 @@ int capture_image(int fd, char *outputfile)
 	printf("Dumped %d bytes into %s (YUV-file 422 format)\n",
 	       buf.bytesused, outputfile);
 	close(f);
+	*/ 
+
 	yuy2tiff(outputfile);
 
 	return 0;
@@ -309,17 +314,18 @@ int capture_image(int fd, char *outputfile)
 
 static void usage(FILE * fp, int argc, char **argv)
 {
-	fprintf(fp, "Usage: %s [options]\n\n" "Options:\n" "-d | --device name   Video device name [/dev/video0]\n" "-e | --exposure_time Exposure Time (optional to auto exposure time)\n" "-h | --help          Print this message\n" "-x | --sw            Still image width\n" "-y | --sh            Still image height\n" "-o | --output        Output filename (default: snap.yuv).\n"	//Use img%%05d.yuv for sequential files\n"
+	fprintf(fp, "Usage: %s [options]\n\n" "Options:\n" "-d | --device name   Video device name [/dev/video0]\n" "-e | --exposure_time Exposure Time (optional to auto exposure time)\n" "-h | --help          Print this message\n" "-x | --sw            Still image width\n" "-y | --sh            Still image height\n" "-w | --white        White balance mode (default: V4L2_CID_AUTO_WHITE_BALANCE, value for V4L2_CID_WHITE_BALANCE_TEMPERATURE: 2800 (incandescent), 6500 (daylight).\n" "-o | --output        Output filename (default: snap.yuv).\n"	//Use img%%05d.yuv for sequential files\n"
 		"", argv[0]);
 }
 
-static const char short_options[] = "d:e:x:y:o:";
+static const char short_options[] = "d:e:x:y:w:o:";
 
 static const struct option long_options[] = {
 	{"device", required_argument, NULL, 'd'},
 	{"exposure", required_argument, NULL, 'e'},
 	{"sw", required_argument, NULL, 'x'},
 	{"sh", required_argument, NULL, 'y'},
+	{"white", required_argument, NULL, 'w'},
 	{"output", required_argument, NULL, 'o'},
 	{0, 0, 0, 0}
 };
@@ -378,6 +384,13 @@ int main(int argc, char *argv[])
 			}
 			break;
 
+		case 'w':
+			value = atoi(optarg);
+			if ((value >= 2800) && (value <= 6500)) {
+				white_balance_mode = value;
+			}
+			break;
+
 		default:
 			usage(stderr, argc, argv);
 			exit(EXIT_FAILURE);
@@ -399,7 +412,73 @@ int main(int argc, char *argv[])
 
 	// show default values in exposure time
 	printf("NOTE: v4l2-ctl -L to query parameters\n");
+	
+	// set white balance
+	if (white_balance_mode > -1) {
+		memset(&queryctrl, 0, sizeof(queryctrl));
+		queryctrl.id = V4L2_CID_AUTO_WHITE_BALANCE;
 
+		if (-1 == xioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+			if (errno != EINVAL) {
+				perror("VIDIOC_QUERYCTRL");
+				exit(EXIT_FAILURE);
+			} else {
+				printf
+				    ("V4L2_CID_AUTO_WHITE_BALANCE is not supported\n");
+			}
+		} else if (queryctrl.flags & V4L2_CTRL_FLAG_DISABLED) {
+			printf("V4L2_CID is not supported\n");
+		} else {
+
+			// set manual flags to modify the white balance
+			memset(&queryctrl, 0, sizeof(queryctrl));
+			queryctrl.id = V4L2_CID_AUTO_WHITE_BALANCE;
+			queryctrl.flags &= !(V4L2_CTRL_FLAG_GRABBED);	// On exposure absolute
+			if (-1 == xioctl(fd, VIDIOC_QUERYCTRL, &queryctrl)) {
+				if (errno != EINVAL) {
+					perror("VIDIOC_QUERYCTRL");
+					exit(EXIT_FAILURE);
+				} else {
+					printf
+					    ("V4L2_CID_AUTO_WHITE_BALANCE is not supported\n");
+				}
+			}
+			// set class camera control
+			struct v4l2_ext_controls query = { 0 };
+			struct v4l2_ext_control ctrl[1];
+			query.ctrl_class = V4L2_CTRL_CLASS_CAMERA;
+			ctrl[0].id = V4L2_CID_AUTO_WHITE_BALANCE;
+			ctrl[0].value = 0;
+
+			query.count = 1;
+			query.controls = ctrl;
+
+			if (-1 ==
+			    ioctl(fd, VIDIOC_S_EXT_CTRLS, &query,
+				  "VIDIOC_S_EXT_CTRLS")) {
+				perror("VIDIOC_G_CTRL get camera class");
+				exit(EXIT_FAILURE);
+			} else {
+				printf("Set V4L2_CTRL_CLASS_CAMERA OK\n");
+			}
+
+			
+			//change the exposure time
+			memset(&control, 0, sizeof(control));
+			control.id = V4L2_CID_WHITE_BALANCE_TEMPERATURE;
+			control.value = white_balance_mode;
+
+			if (-1 == xioctl(fd, VIDIOC_S_CTRL, &control)) {
+				perror("VIDIOC_S_CTRL set white balance temperature");
+				exit(EXIT_FAILURE);
+			}
+			printf("Set white balance temperature OK\n");
+			 
+		}
+
+	}
+
+	// set exposure_time
 	if (exposure_time > -1) {
 		memset(&queryctrl, 0, sizeof(queryctrl));
 		queryctrl.id = V4L2_CID_EXPOSURE_ABSOLUTE;
